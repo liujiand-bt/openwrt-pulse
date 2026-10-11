@@ -64,47 +64,71 @@ python3 -m http.server 8765 --directory web
 
 ## 安装 · 现代 OpenWrt（23.05 / 24.10）
 
-一般已自带 `ucode`、`nftables-json`、`uhttpd`（装了 LuCI 即可）。
+一般已自带 `ucode`、`nftables-json`、`uhttpd`（装了 LuCI 即可）。安装包：`openwrt-pulse-modern.tar.gz`（`router/` + `web/`）。
+
+**方法 A：路由器直接下载**（需要路由器能访问 GitHub）
 
 ```bash
-# 电脑上
-scp -O -r openwrt-pulse root@192.168.1.1:/tmp/
-
-# 路由器上
+cd /tmp
+wget -O openwrt-pulse-modern.tar.gz https://github.com/liujiand-bt/openwrt-pulse/releases/latest/download/openwrt-pulse-modern.tar.gz
+#   或：curl -fL -o openwrt-pulse-modern.tar.gz https://github.com/liujiand-bt/openwrt-pulse/releases/latest/download/openwrt-pulse-modern.tar.gz
+tar xzf openwrt-pulse-modern.tar.gz
 sh /tmp/openwrt-pulse/router/install.sh
-# 浏览器打开 http://192.168.1.1/pulse/
 ```
 
-脚本会安装采集器 `/www/cgi-bin/pulse`、前端 `/www/pulse/`、配置 `/etc/config/pulse`，并创建只计数、不拦截的 nft 表。卸载：`sh /tmp/openwrt-pulse/router/uninstall.sh`。
+**方法 B：电脑下载后上传**（路由器访问不了 GitHub 时）
+
+```bash
+# 电脑上：先在浏览器下载 https://github.com/liujiand-bt/openwrt-pulse/releases/latest/download/openwrt-pulse-modern.tar.gz
+scp -O openwrt-pulse-modern.tar.gz root@192.168.1.1:/tmp/
+# 路由器上
+cd /tmp && tar xzf openwrt-pulse-modern.tar.gz && sh /tmp/openwrt-pulse/router/install.sh
+```
+
+`scp -O` 表示用老式 scp 协议：dropbear 没有 SFTP，新版 OpenSSH 不加 `-O` 会失败。
+
+安装脚本会：
+- 安装采集器 `/www/cgi-bin/pulse`、前端 `/www/pulse/`、配置 `/etc/config/pulse`；
+- 创建只计数、不拦截的 nft 表；
+- **自动生成访问口令**，写入 `uci pulse.main.token`，并在最后打印口令和带口令的地址 `http://192.168.1.1/pulse/?token=…`。
+
+不想设口令就用 `sh /tmp/openwrt-pulse/router/install.sh --no-token`。重装时如果已有 `/etc/config/pulse`，会保留原来的配置和口令。
+
+卸载：`sh /tmp/openwrt-pulse/router/uninstall.sh`。
 
 **每设备计数来源（自动选择）**：nft 每 IP 计数表 → Bandix → conntrack → nlbwmon。详见 `/etc/config/pulse` 的 `counters` 选项。
 
-也可以只装采集器，前端放在电脑上打开（需设置 `cors_origin` 与 `token`）。
+也可以把前端放在电脑上打开：在路由器上设置 `uci set pulse.main.cors_origin='*'; uci commit pulse`，然后在电脑上双击 `web/index.html` →「连接路由器」。
 
 ---
 
 ## 安装 · QWRT / OpenWrt 19.07（无 ucode，如京东云 AX1800 Pro）
 
-路由器 overlay 往往只剩几百 KB：建议**只装采集器（约 32 KB）**，前端在电脑上打开。
+路由器 overlay 往往只剩几百 KB：建议**只装采集器（约 32 KB）**，前端在电脑上打开。安装包：`pulse-qwrt.tar.gz`。
 
-完整步骤、scp `-O`、诊断命令、NSS/ECM 说明见 **[router19/INSTALL-QWRT.md](router19/INSTALL-QWRT.md)**。摘要：
+完整步骤、诊断命令、NSS/ECM 说明见 **[router19/INSTALL-QWRT.md](router19/INSTALL-QWRT.md)**。摘要：
 
 ```bash
-# 打包（在开发机）
-tools/build-qwrt.sh          # → dist/pulse-qwrt.tar.gz
+# 方法 A：路由器直接下载（19.07 的 wget 不一定支持 HTTPS / 证书较旧；不行就用方法 B）
+cd /tmp
+wget -O pulse-qwrt.tar.gz https://github.com/liujiand-bt/openwrt-pulse/releases/latest/download/pulse-qwrt.tar.gz
+#   证书报错可加 --no-check-certificate；或：curl -fkL -o pulse-qwrt.tar.gz https://github.com/liujiand-bt/openwrt-pulse/releases/latest/download/pulse-qwrt.tar.gz
 
-# 上传并安装
-scp -O dist/pulse-qwrt.tar.gz root@192.168.1.1:/tmp/
-ssh root@192.168.1.1
+# 方法 B：电脑浏览器下载后上传
+scp -O pulse-qwrt.tar.gz root@192.168.1.1:/tmp/
+
+# 路由器上
 cd /tmp && tar xzf pulse-qwrt.tar.gz
 sh /tmp/pulse-qwrt/diag.sh           # 先诊断，不安装
 sh /tmp/pulse-qwrt/install.sh tmp    # 临时：全在 /tmp，:8088 小网站
 sh /tmp/pulse-qwrt/install.sh        # 常驻：约 32 KB 写入闪存；装完建议重启一次
 ```
 
-电脑上双击包内 `web/index.html` →「连接路由器」→ `http://192.168.1.1/cgi-bin/pulse` + 口令。
+QWRT 安装脚本同样会**自动生成口令**，写入 `uci pulse.main.token` 并打印出来。tmp 模式没有 `/etc/config/pulse` 时，口令写在 `/tmp/pulse/pulse.conf`。
 
-热更新采集器（例如 WiFi 分类修复）：`dist/pulse-qwrt-update.tar.gz`，见包内 `UPDATE.txt`。
+电脑上解压同一个包，双击 `pulse-qwrt/web/index.html` →「连接路由器」→ 填 `http://192.168.1.1/cgi-bin/pulse` 和口令（QWRT 版默认 `cors_origin='*'`）。
+
+自己打包：`tools/build-qwrt.sh` → `dist/pulse-qwrt.tar.gz`。
 
 ---
 
@@ -126,7 +150,7 @@ sh /tmp/pulse-qwrt/install.sh        # 常驻：约 32 KB 写入闪存；装完�
 ## 安全
 
 - **不要暴露到公网。** 面板含设备名、IP、MAC、WireGuard 端点。不要给 80/443/8088 做端口转发；外出请先连回家的 WireGuard。
-- **设置口令**（`/etc/config/pulse` 的 `token`）。安装脚本可自动生成。前端用 `?token=` 或连接对话框保存到本机浏览器。这是共享口令 + 明文 HTTP，只防家里随手打开。
+- **口令**（`/etc/config/pulse` 的 `token`）：两个安装脚本都会自动生成并打印；现代版可用 `--no-token` 跳过。查看：`uci get pulse.main.token`；更换：`uci set pulse.main.token="$(head -c 12 /dev/urandom | md5sum | cut -c1-16)"; uci commit pulse`。前端用 `?token=` 或「连接路由器」对话框（保存在本机浏览器）。这是共享口令 + 明文 HTTP，只防家里随手打开。
 - 采集器**只读**（除非手动把 `counters` 设成 iptables，才会建一条只计数的链）。WireGuard **私钥不会输出**。
 
 ---

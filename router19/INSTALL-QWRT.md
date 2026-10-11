@@ -12,6 +12,8 @@
 
 ## 0. 准备
 
+下载安装包：https://github.com/liujiand-bt/openwrt-pulse/releases/latest/download/pulse-qwrt.tar.gz（每个版本的 `SHA256SUMS` 在 GitHub Releases 页面）。
+
 在电脑上解压 `pulse-qwrt.tar.gz`，得到 `pulse-qwrt/` 文件夹：
 
 ```
@@ -26,6 +28,13 @@ pulse-qwrt/
 ```
 
 ## 1. 上传到路由器
+
+**方法 0：路由器直接下载**（19.07 的 wget 可能不支持 HTTPS，或者证书太旧；失败就用下面的方法 A/B）
+
+```bash
+cd /tmp && wget -O pulse-qwrt.tar.gz https://github.com/liujiand-bt/openwrt-pulse/releases/latest/download/pulse-qwrt.tar.gz
+# 证书报错：wget --no-check-certificate ...  或  curl -fkL -o pulse-qwrt.tar.gz https://github.com/liujiand-bt/openwrt-pulse/releases/latest/download/pulse-qwrt.tar.gz
+```
 
 **方法 A：scp**（macOS / Linux / Windows 10+ 自带的 OpenSSH 都可以）
 
