@@ -50,7 +50,7 @@ OpenWrt 实时流量面板：一页看清谁在用带宽、流量从哪来到哪
 ## 先看效果（不用路由器）
 
 ```bash
-git clone https://github.com/<you>/openwrt-pulse.git
+git clone https://github.com/liujiand-bt/openwrt-pulse.git
 cd openwrt-pulse
 python3 -m http.server 8765 --directory web
 # 打开 http://127.0.0.1:8765/?mock=1
