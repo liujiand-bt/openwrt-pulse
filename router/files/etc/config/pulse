@@ -1,5 +1,5 @@
 config pulse 'main'
-	# 访问口令：非空时，请求须带 X-Pulse-Token 头或 ?token= 参数
+	# 访问口令（install.sh 会自动生成；--no-token 则留空）。非空时请求须带 ?token= 参数或 X-Pulse-Token 头
 	option token ''
 	# 前端放在 PC 上跨域访问时填写，例如 'http://192.168.1.100:8080'；同源部署留空
 	option cors_origin ''

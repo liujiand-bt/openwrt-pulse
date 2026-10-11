@@ -68,7 +68,8 @@
     const bn = $('banner'); bn.hidden = !k; bn.innerHTML = (w || []).map(x => '⚠ ' + esc(x)).join('<br>');
   }
   function openConn() {
-    $('inEp').value = cfg.endpoint && /^https?:/.test(cfg.endpoint) ? cfg.endpoint : 'http://192.168.1.1/cgi-bin/pulse';
+    $('inEp').value = /^https?:/.test(cfg.endpoint || '') ? cfg.endpoint
+      : /^https?:/.test(location.protocol) ? new URL(cfg.endpoint || '/cgi-bin/pulse', location.href).href : 'http://192.168.1.1/cgi-bin/pulse';
     $('inTok').value = cfg.token || '';
     $('connDlg').showModal();
   }
