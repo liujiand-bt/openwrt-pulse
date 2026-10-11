@@ -1,0 +1,6 @@
+#!/bin/sh /etc/rc.common
+# openwrt-pulse：开机创建 nftables 每 IP 计数表
+START=99
+STOP=10
+start() { [ "$(uci -q get pulse.main.nft_counters)" = "0" ] && return 0; /usr/share/pulse/pulse-nft.sh start; }
+stop() { /usr/share/pulse/pulse-nft.sh stop; }

@@ -1,0 +1,13 @@
+config pulse 'main'
+	# 访问口令：非空时，请求须带 X-Pulse-Token 头或 ?token= 参数
+	option token ''
+	# 前端放在 PC 上跨域访问时填写，例如 'http://192.168.1.100:8080'；同源部署留空
+	option cors_origin ''
+	# 每设备计数来源：auto | nft | bandix | conntrack | nlbwmon | none
+	option counters 'auto'
+	option lan_iface 'lan'
+	option wan_iface 'wan'
+	option wan6_iface 'wan6'
+	option bandix_port '8686'
+	# 由 /etc/init.d/pulse 使用：是否创建 nftables 每 IP 计数表
+	option nft_counters '1'

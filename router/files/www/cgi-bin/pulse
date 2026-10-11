@@ -1,0 +1,317 @@
+#!/usr/bin/ucode -S
+// openwrt-pulse 采集器（uhttpd CGI，ucode）
+// 每次请求读取一次路由器状态，输出累计计数器快照（JSON）；速率由前端求差计算。
+// 依赖：ucode、ucode-mod-fs（默认已装）、ucode-mod-ubus、ucode-mod-uci（23.05+ 随 LuCI 安装）
+// 可选：nftables（per-IP 计数）、wireguard-tools、conntrack、bandix、nlbwmon
+'use strict';
+
+import * as fs from 'fs';
+
+let ubusmod = null, ucimod = null;
+try { ubusmod = require('ubus'); } catch (e) { }
+try { ucimod = require('uci'); } catch (e) { }
+
+const ROOT = getenv('PULSE_ROOT') || '';          // 仅用于离线测试：给 /proc 等路径加前缀
+const T0 = clock(true);
+
+function rd(path) { return fs.readfile(ROOT + path); }
+function lines(path) { let s = rd(path); return s ? split(trim(s), '\n') : []; }
+function sh(cmd) {
+	let p = fs.popen(cmd + ' 2>/dev/null', 'r');
+	if (!p) return null;
+	let out = p.read('all'); p.close();
+	return out;
+}
+function fields(l) { return filter(split(trim(l), /[ \t]+/), x => x != ''); }
+
+// ---------- 配置 ----------
+let conf = { token: '', cors_origin: '', counters: 'auto', lan_iface: 'lan', wan_iface: 'wan', wan6_iface: 'wan6', bandix_port: '8686' };
+let cur = null;
+if (ucimod) {
+	cur = ucimod.cursor();
+	for (let k in conf) { let v = cur.get('pulse', 'main', k); if (v != null) conf[k] = v; }
+}
+
+// ---------- CGI 头与鉴权 ----------
+let qs = {};
+for (let kv in split(getenv('QUERY_STRING') || '', '&')) {
+	let p = split(kv, '=', 2);
+	if (p[0] != '') qs[p[0]] = p[1] ?? '';
+}
+let hdr = 'Content-Type: application/json\r\nCache-Control: no-store\r\n';
+if (conf.cors_origin != '') hdr += `Access-Control-Allow-Origin: ${conf.cors_origin}\r\nAccess-Control-Allow-Headers: X-Pulse-Token\r\n`;
+if (getenv('REQUEST_METHOD') == 'OPTIONS') { print('Status: 204 No Content\r\n' + hdr + '\r\n'); exit(0); }
+if (conf.token != '') {
+	let given = getenv('HTTP_X_PULSE_TOKEN') || qs.token || '';
+	if (given != conf.token) { print('Status: 403 Forbidden\r\n' + hdr + '\r\n{"error":"forbidden"}\n'); exit(0); }
+}
+const FULL = (qs.full == '1');
+
+let bus = ubusmod ? ubusmod.connect() : null;
+function ub(obj, method, args) { if (!bus) return null; return bus.call(obj, method, args ?? {}); }
+
+// ---------- IPv4 工具 ----------
+function ipn(ip) {
+	let p = match(ip ?? '', /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+	return p ? (((+p[1]) * 16777216) + ((+p[2]) * 65536) + ((+p[3]) * 256) + (+p[4])) : null;
+}
+let lanNet = null, lanMaskSize = 0, lanIp = '', lanCidr = '';
+function inLan(ip) {
+	let n = ipn(ip);
+	if (n == null || lanNet == null) return false;
+	return int(n / lanMaskSize) == int(lanNet / lanMaskSize);
+}
+
+// ---------- 路由器信息 ----------
+function routerInfo() {
+	let rel = rd('/etc/openwrt_release') || '';
+	let m = match(rel, /DISTRIB_DESCRIPTION='([^']*)'/);
+	let mem = {};
+	for (let l in lines('/proc/meminfo')) { let f = match(l, /^(\w+):\s+(\d+)/); if (f) mem[f[1]] = +f[2] * 1024; }
+	let la = fields(rd('/proc/loadavg') || '0 0 0');
+	return {
+		hostname: trim(rd('/proc/sys/kernel/hostname') || 'OpenWrt'),
+		model: trim(rd('/tmp/sysinfo/model') || ''),
+		release: m ? m[1] : '',
+		uptime: int(+fields(rd('/proc/uptime') || '0')[0]),
+		load: [+la[0], +la[1], +la[2]],
+		mem_total: mem.MemTotal ?? 0, mem_avail: mem.MemAvailable ?? mem.MemFree ?? 0,
+		lan_ip: lanIp, lan_cidr: lanCidr
+	};
+}
+
+// ---------- 接口与设备统计 ----------
+let procDev = {};
+for (let l in lines('/proc/net/dev')) {
+	let m = match(l, /^\s*([^:\s]+):\s*(.*)$/);
+	if (!m) continue;
+	let f = fields(m[2]);
+	procDev[m[1]] = { rx_bytes: +f[0], tx_bytes: +f[8] };
+}
+let devStatus = ub('network.device', 'status') ?? {};
+function devStats(dev) {
+	let s = devStatus[dev]?.statistics;
+	if (s && s.rx_bytes != null) return { rx_bytes: s.rx_bytes, tx_bytes: s.tx_bytes };
+	return procDev[dev] ?? { rx_bytes: 0, tx_bytes: 0 };
+}
+
+let ifdump = ub('network.interface', 'dump')?.interface ?? [];
+let ifaces = [], wan = { iface: conf.wan_iface, device: '', proto: '', up: false, ipv4: '', ipv6: '', rx_bytes: 0, tx_bytes: 0 };
+let seenDev = {};
+for (let i in ifdump) {
+	let dev = i.l3_device ?? i.device ?? '';
+	let a4 = i['ipv4-address']?.[0];
+	if (i.interface == conf.lan_iface && a4) {
+		lanIp = a4.address;
+		let bits = +a4.mask;
+		lanMaskSize = 2 ** (32 - bits);
+		lanNet = ipn(a4.address);
+		let base = int(lanNet / lanMaskSize) * lanMaskSize;
+		lanCidr = sprintf('%d.%d.%d.%d/%d', int(base / 16777216) % 256, int(base / 65536) % 256, int(base / 256) % 256, base % 256, bits);
+	}
+	if (i.interface == conf.wan6_iface) {
+		let a6 = i['ipv6-address']?.[0] ?? i['ipv6-prefix']?.[0];
+		if (a6) wan.ipv6 = a6.address;
+		if (seenDev[dev]) continue;
+	}
+	if (i.interface == 'loopback' || dev == '' || seenDev[dev]) continue;
+	seenDev[dev] = true;
+	let st = devStats(dev);
+	let kind = (i.interface == conf.wan_iface) ? 'wan' : (i.proto == 'wireguard') ? 'wg' : (i.interface == conf.lan_iface) ? 'lan' : 'other';
+	let speed = devStatus[dev]?.speed ?? '';
+	let row = { name: i.interface, device: dev, kind: kind, proto: i.proto ?? '', up: !!i.up,
+		ipv4: a4 ? `${a4.address}/${a4.mask}` : '', rx_bytes: st.rx_bytes, tx_bytes: st.tx_bytes, speed: speed == '-1F' ? '' : speed };
+	push(ifaces, row);
+	if (kind == 'wan') {
+		wan.device = dev; wan.proto = i.proto ?? ''; wan.up = !!i.up; wan.ipv4 = a4 ? a4.address : '';
+		wan.rx_bytes = st.rx_bytes; wan.tx_bytes = st.tx_bytes;
+	}
+}
+// 没有 ubus 时的兜底（测试或精简固件）：从 /proc/net/dev 猜
+if (!length(ifdump)) {
+	for (let d in procDev) {
+		if (d == 'lo') continue;
+		let kind = match(d, /^(pppoe-wan|wan|eth1)$/) ? 'wan' : match(d, /^wg/) ? 'wg' : match(d, /^br-lan$/) ? 'lan' : 'other';
+		push(ifaces, { name: d, device: d, kind: kind, proto: '', up: true, ipv4: '', rx_bytes: procDev[d].rx_bytes, tx_bytes: procDev[d].tx_bytes, speed: '' });
+		if (kind == 'wan' && !wan.device) { wan.device = d; wan.up = true; wan.rx_bytes = procDev[d].rx_bytes; wan.tx_bytes = procDev[d].tx_bytes; }
+	}
+}
+
+// ---------- 无线客户端 ----------
+let assoc = {};   // mac -> {radio, band, signal}
+let wifiDevs = ub('iwinfo', 'devices')?.devices ?? [];
+for (let wd in wifiDevs) {
+	let info = ub('iwinfo', 'info', { device: wd }) ?? {};
+	let fq = +(info.frequency ?? 0);
+	let band = fq > 5900 ? '6G' : fq > 4900 ? '5G' : fq > 0 ? '2.4G' : '';
+	let list = ub('iwinfo', 'assoclist', { device: wd })?.results ?? [];
+	for (let s in list) assoc[lc(s.mac)] = { radio: wd, band: band, signal: s.signal };
+	let st = procDev[wd] ?? { rx_bytes: 0, tx_bytes: 0 };
+	push(ifaces, { name: `${info.ssid ?? wd} ${band}`, device: wd, kind: 'wifi', proto: info.mode ?? 'ap', up: true, ipv4: '',
+		rx_bytes: st.rx_bytes, tx_bytes: st.tx_bytes, speed: info.channel ? `ch${info.channel}` : '' });
+}
+
+// ---------- DHCP 租约与名称 ----------
+let names = {};
+if (cur) cur.foreach('dhcp', 'host', s => {
+	let macs = type(s.mac) == 'array' ? s.mac : split(s.mac ?? '', ' ');
+	for (let m in macs) if (m != '' && s.name) names[lc(m)] = s.name;
+});
+let leases = [], leaseByMac = {};
+let now = time();
+for (let l in lines('/tmp/dhcp.leases')) {
+	let f = fields(l);
+	if (length(f) < 4) continue;
+	let mac = lc(f[1]);
+	let o = { mac: mac, ip: f[2], name: (f[3] == '*') ? '' : f[3], expires: (+f[0] > 0) ? (+f[0] - now) : -1 };
+	push(leases, o); leaseByMac[mac] = o;
+}
+if (!length(leases)) {
+	for (let o in (ub('luci-rpc', 'getDHCPLeases')?.dhcp_leases ?? [])) {
+		let x = { mac: lc(o.macaddr ?? ''), ip: o.ipaddr, name: o.hostname ?? '', expires: o.expires ?? -1 };
+		push(leases, x); leaseByMac[x.mac] = x;
+	}
+}
+
+// ---------- 在线设备（ARP + 无线关联表） ----------
+let devices = {}, ip2mac = {};
+for (let l in slice(lines('/proc/net/arp'), 1)) {
+	let f = fields(l);           // IP HWtype Flags HWaddr Mask Device
+	if (length(f) < 6 || f[2] != '0x2' || f[3] == '00:00:00:00:00:00') continue;
+	if (lanNet != null && !inLan(f[0])) continue;
+	let mac = lc(f[3]);
+	devices[mac] = { mac: mac, ip: f[0], ip6: [], online: true };
+	ip2mac[f[0]] = mac;
+}
+for (let mac in assoc) {
+	if (!devices[mac]) {
+		let lip = leaseByMac[mac]?.ip ?? '';
+		devices[mac] = { mac: mac, ip: lip, ip6: [], online: true };
+		if (lip != '') ip2mac[lip] = mac;
+	}
+}
+for (let mac in devices) {
+	let d = devices[mac], a = assoc[mac];
+	d.name = names[mac] ?? leaseByMac[mac]?.name ?? '';
+	d.link = a ? 'wifi' : 'wired';
+	d.radio = a?.radio ?? ''; d.band = a?.band ?? ''; d.signal = a?.signal ?? null;
+	d.rx_bytes = 0; d.tx_bytes = 0;
+}
+
+// ---------- 连接跟踪 ----------
+let ct = { count: +(trim(rd('/proc/sys/net/netfilter/nf_conntrack_count') || '0')), max: +(trim(rd('/proc/sys/net/netfilter/nf_conntrack_max') || '0')) };
+let acct = trim(rd('/proc/sys/net/netfilter/nf_conntrack_acct') || '0') == '1';
+
+// ---------- per-IP 计数器 ----------
+let source = 'none';
+function addBytes(ip, mac, rx, tx) {
+	mac = mac ?? ip2mac[ip];
+	if (!mac || !devices[mac]) return;
+	devices[mac].rx_bytes += rx; devices[mac].tx_bytes += tx;
+}
+function nftSet(name) {
+	let out = sh(`nft -j list set inet pulse ${name}`);
+	if (!out) return null;
+	let j = json(out), res = {};
+	for (let o in (j?.nftables ?? [])) {
+		for (let e in (o.set?.elem ?? [])) {
+			let el = e.elem ?? e;
+			if (type(el) == 'object' && el.val) res[el.val] = el.counter?.bytes ?? 0;
+		}
+	}
+	return res;
+}
+function tryNft() {
+	let dl = nftSet('dl4'), ul = nftSet('ul4');
+	if (dl == null || ul == null) return false;
+	for (let ip in dl) addBytes(ip, null, dl[ip], 0);
+	for (let ip in ul) addBytes(ip, null, 0, ul[ip]);
+	return true;
+}
+function tryBandix() {
+	let out = sh(`uclient-fetch -q -T 1 -O - http://127.0.0.1:${conf.bandix_port}/api/traffic/devices`) ?? sh(`curl -s -m 1 http://127.0.0.1:${conf.bandix_port}/api/traffic/devices`);
+	let j = out ? json(out) : null;
+	let arr = j?.data?.d ?? j?.data?.devices ?? j?.d ?? j?.devices ?? (type(j?.data) == 'array' ? j.data : null);
+	if (type(arr) != 'array') return false;
+	for (let d in arr) {
+		let mac = lc(d.mac ?? d.mac_address ?? '');
+		let ip = d.ip4 ?? d.ip ?? d.ip_address ?? '';
+		if (!devices[mac] && mac != '') {   // bandix 认识但 ARP 里暂时没有的设备
+			devices[mac] = { mac: mac, ip: ip, ip6: [], online: true, name: names[mac] ?? d.host ?? d.hostname ?? '', link: (d.conn == 'wifi') ? 'wifi' : 'wired', radio: '', band: '', signal: null, rx_bytes: 0, tx_bytes: 0 };
+		}
+		if (devices[mac] && !devices[mac].name) devices[mac].name = d.host ?? d.hostname ?? '';
+		addBytes(ip, mac, +(d.t_rx_b ?? d.total_rx_bytes ?? 0), +(d.t_tx_b ?? d.total_tx_bytes ?? 0));
+	}
+	return true;
+}
+function tryNlbw() {
+	let out = sh('nlbw -c json -g mac');
+	let j = out ? json(out) : null;
+	if (!j?.columns) return false;
+	let ci = {}; for (let i = 0; i < length(j.columns); i++) ci[j.columns[i]] = i;
+	for (let r in j.data) addBytes(null, lc(r[ci.mac]), +r[ci.rx_bytes], +r[ci.tx_bytes]);
+	return true;
+}
+// 解析 /proc/net/nf_conntrack：统计每个内网 IP 的连接数；若 counters=conntrack 同时累加字节
+let conns = {};
+function scanConntrack(withBytes) {
+	let s = rd('/proc/net/nf_conntrack');
+	if (s == null) s = sh('conntrack -L -o extended');
+	if (s == null) return false;
+	for (let l in split(s, '\n')) {
+		let src = match(l, /src=([0-9.]+) dst=([0-9.]+)/);
+		if (!src) continue;
+		let local = inLan(src[1]) ? src[1] : inLan(src[2]) ? src[2] : null;
+		if (!local) continue;
+		conns[local] = (conns[local] ?? 0) + 1;
+		if (withBytes) {
+			let b = match(l, /bytes=(\d+).*bytes=(\d+)/);
+			if (b) { if (local == src[1]) addBytes(local, null, +b[2], +b[1]); else addBytes(local, null, +b[1], +b[2]); }
+		}
+	}
+	return true;
+}
+
+let mode = conf.counters, ctScanned = false;
+if ((mode == 'auto' || mode == 'nft') && tryNft()) source = 'nft';
+else if ((mode == 'auto' || mode == 'bandix') && tryBandix()) source = 'bandix';
+else if ((mode == 'auto' && acct) || mode == 'conntrack') { if (scanConntrack(true)) { source = 'conntrack'; ctScanned = true; } }
+if (source == 'none' && (mode == 'auto' || mode == 'nlbwmon') && tryNlbw()) source = 'nlbwmon';
+if (FULL && !ctScanned) scanConntrack(false);
+
+let devList = [];
+for (let mac in devices) {
+	let d = devices[mac];
+	if (FULL || ctScanned) d.conns = conns[d.ip] ?? 0;
+	push(devList, d);
+}
+
+// ---------- WireGuard ----------
+let wg = [], wgNames = {};
+if (cur) {
+	cur.foreach('network', null, s => {
+		if (index(s['.type'], 'wireguard_') == 0 && s.public_key)
+			wgNames[s.public_key] = { name: s.description ?? '', allowed: type(s.allowed_ips) == 'array' ? join(', ', s.allowed_ips) : (s.allowed_ips ?? '') };
+	});
+}
+let dump = sh('wg show all dump');
+if (dump) {
+	for (let l in split(trim(dump), '\n')) {
+		let f = split(l, '\t');
+		if (length(f) != 9) continue;   // 只取 peer 行；接口行含私钥，绝不输出
+		let n = wgNames[f[1]];
+		push(wg, { iface: f[0], pubkey: substr(f[1], 0, 10) + '…', name: n?.name ?? '', endpoint: f[3],
+			allowed: replace(f[4], ',', ', '), handshake: +f[5], rx_bytes: +f[6], tx_bytes: +f[7] });
+	}
+}
+
+let T1 = clock(true);
+let ms = (T1[0] - T0[0]) * 1000 + int((T1[1] - T0[1]) / 1000000);
+let rt = clock(false);
+if (getenv('PULSE_FAKE_TS')) rt = [int(+getenv('PULSE_FAKE_TS') / 1000), (+getenv('PULSE_FAKE_TS') % 1000) * 1000000];   // 仅离线测试用
+
+print(hdr + '\r\n');
+printf('%J\n', {
+	v: 1, ts: rt[0] * 1000 + int(rt[1] / 1000000), full: FULL, counter_source: source, collect_ms: ms,
+	router: routerInfo(), wan: wan, interfaces: ifaces, devices: devList, leases: leases, wg: wg, conntrack: ct
+});

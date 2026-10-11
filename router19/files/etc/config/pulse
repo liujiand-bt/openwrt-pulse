@@ -1,0 +1,17 @@
+config pulse 'main'
+	# 访问口令（安装脚本会自动生成）。请求需带 ?token=...
+	option token ''
+	# 允许跨域访问的前端来源；前端放在电脑上打开时需要，'*' = 任意（有口令保护）
+	option cors_origin '*'
+	# 每设备计数来源：auto(=conntrack) | conntrack | iptables | none
+	# 高通 NSS/ECM 加速的机器请用 conntrack；iptables 只在没有硬件加速时准确
+	option counters 'auto'
+	option lan_iface 'lan'
+	option wan_iface 'wan'
+	option wan6_iface 'wan6'
+	# NSS 加速下若 pppoe-wan 速率明显偏低，可填底层网口（如 eth0），diag.sh 会给出建议
+	option wan_stats_dev ''
+	# 是否用 IPv6 邻居表把 IPv6 连接算到设备上
+	option ipv6 '1'
+	# 多个页面同时打开时，这个时间（毫秒）内的重复请求直接返回上一次结果
+	option cache_ms '700'

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>openwrt-pulse · 实时流量面板</title>
+<link rel="stylesheet" href="css/style.css">
+<script src="js/config.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo" aria-hidden="true"></span>
+    <b>openwrt-pulse</b>
+    <span class="host mono" id="hostLabel">—</span>
+    <span class="clock mono" id="clock">--:--:--</span>
+  </div>
+  <div class="status"><span class="badge" id="srcBadge"><i class="dot"></i><span id="srcText">连接中…</span></span></div>
+  <div class="actions">
+    <button class="btn" id="btnPause" data-i18n="pause">暂停</button>
+    <button class="btn" id="btnLang">EN</button>
+    <button class="btn" id="btnConn" data-i18n="connect">连接路由器</button>
+    <button class="btn icon" id="btnTheme" title="亮/暗">◐</button>
+  </div>
+</header>
+
+<div class="banner" id="banner" hidden></div>
+
+<main class="wrap">
+  <section class="cards" id="cards"></section>
+
+  <section class="mid">
+    <div class="panel flow-panel">
+      <div class="panel-head">
+        <h2><span data-i18n="flowTitle">流量流向图</span> <small data-i18n="flowSub">线越粗越快 · 虚线流动速度 = 当前速率 · 悬停看详情</small></h2>
+        <div class="legend" id="legend"></div>
+      </div>
+      <div class="flow-scroll"><svg id="flow" viewBox="0 0 1000 620" preserveAspectRatio="xMidYMid meet" role="img" aria-label="topology"></svg></div>
+    </div>
+    <div class="panel feed-panel">
+      <div class="panel-head">
+        <h2><span data-i18n="feedTitle">实时事件</span> <small data-i18n="feedSub">新设备 · 突发 · 连接 · 租约</small></h2>
+        <div class="filters" id="feedFilters"></div>
+      </div>
+      <ol class="feed" id="feed"></ol>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2><span data-i18n="devTitle">内网 Top 设备</span> <small id="devSub"></small></h2></div>
+    <div class="tbl-scroll"><table class="tbl" id="tblDevices"></table></div>
+  </section>
+
+  <section class="bottom">
+    <div class="panel">
+      <div class="panel-head"><h2><span data-i18n="wgTitle">WireGuard 对端</span> <small id="wgSub"></small></h2></div>
+      <div class="tbl-scroll"><table class="tbl" id="tblWg"></table></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2><span data-i18n="ifTitle">接口</span> <small id="ifSub"></small></h2></div>
+      <div class="tbl-scroll"><table class="tbl" id="tblIf"></table></div>
+    </div>
+  </section>
+
+  <footer class="foot mono" id="foot"></footer>
+</main>
+<div class="tip" id="tip"></div>
+<dialog id="connDlg">
+  <form method="dialog" class="conn">
+    <h3 data-i18n="connTitle">连接路由器</h3>
+    <label><span data-i18n="connEp">采集器地址</span><input id="inEp" placeholder="http://192.168.1.1/cgi-bin/pulse" autocomplete="off"></label>
+    <label><span data-i18n="connTok">口令（/etc/config/pulse 里的 token）</span><input id="inTok" autocomplete="off"></label>
+    <p class="hint" data-i18n="connHint">地址和口令只保存在本机浏览器里。</p>
+    <div class="row"><button class="btn" value="mock" data-i18n="useMock">用模拟数据</button><span></span><button class="btn" value="cancel" data-i18n="cancel">取消</button><button class="btn primary" value="ok" data-i18n="connect">连接路由器</button></div>
+  </form>
+</dialog>
+
+<script src="js/i18n.js"></script>
+<script src="js/mock.js"></script>
+<script src="js/state.js"></script>
+<script src="js/flow.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

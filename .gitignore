@@ -1,0 +1,35 @@
+# 构建产物（用 tools/build-qwrt.sh 生成）
+dist/
+
+# 离线测试产生的假根目录 / 替身命令 / 输出
+router/test/root/
+router/test/bin/
+router/test/lib/
+router/test/out*
+router19/test/root/
+router19/test/bin/
+router19/test/state*/
+router19/test/out*
+router19/test/cache*.txt
+
+# 采集器运行时状态（只应出现在路由器 /tmp）
+**/last.json
+**/ct.state
+**/dev.state
+**/pulse.conf
+**/state-dev/
+
+# 编辑器 / 系统
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+*.pyc
+__pycache__/
+
+# 本地口令或私货配置（若有人复制了真机 config）
+*.secret
+.env
+.env.*
